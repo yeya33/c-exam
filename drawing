@@ -1,0 +1,513 @@
+#define _CRT_SECURE_NO_WARNINGS
+#define NOMINMAX
+
+#include <graphics.h>
+#include <conio.h>
+#include <vector>
+#include <memory>
+#include <string>
+#include <fstream>
+#include <iostream>
+#include <cmath>
+#include <algorithm>
+#include <windows.h>
+
+using namespace std;
+
+// 图形基类（抽象类）
+class GraphicObject {
+protected:
+    int x1, y1, x2, y2;
+    COLORREF color;
+    int lineWidth;
+    bool selected;
+
+public:
+    GraphicObject(int x1, int y1, int x2, int y2,
+        COLORREF color, int lineWidth)
+        : x1(x1), y1(y1), x2(x2), y2(y2),
+        color(color), lineWidth(lineWidth),
+        selected(false) {
+    }
+
+    virtual ~GraphicObject() = default;
+
+    virtual void draw() = 0;
+    virtual void drawPreview() = 0;
+    virtual string getType() const = 0;
+
+    virtual void updateEnd(int x, int y) {
+        x2 = x; y2 = y;
+    }
+
+    virtual bool contains(int x, int y) const {
+        int minX = (x1 < x2) ? x1 : x2;
+        int maxX = (x1 > x2) ? x1 : x2;
+        int minY = (y1 < y2) ? y1 : y2;
+        int maxY = (y1 > y2) ? y1 : y2;
+
+        return x >= minX && x <= maxX && y >= minY && y <= maxY;
+    }
+
+    void setColor(COLORREF c) { color = c; }
+    COLORREF getColor() const { return color; }
+    void setLineWidth(int w) { lineWidth = w; }
+    int getLineWidth() const { return lineWidth; }
+    void setSelected(bool sel) { selected = sel; }
+    bool isSelected() const { return selected; }
+};
+
+class Line : public GraphicObject {
+public:
+    Line(int x1, int y1, int x2, int y2,
+        COLORREF color, int lineWidth)
+        : GraphicObject(x1, y1, x2, y2, color, lineWidth) {
+    }
+
+    void draw() override {
+        setlinecolor(color);
+        setlinestyle(PS_SOLID, lineWidth);
+        line(x1, y1, x2, y2);
+    }
+
+    void drawPreview() override {
+        setlinecolor(color);
+        setlinestyle(PS_DASH, lineWidth);
+        line(x1, y1, x2, y2);
+    }
+
+    string getType() const override {
+        return "line";
+    }
+};
+
+class RectObj : public GraphicObject {
+public:
+    RectObj(int x1, int y1, int x2, int y2,
+        COLORREF color, int lineWidth)
+        : GraphicObject(x1, y1, x2, y2, color, lineWidth) {
+    }
+
+    void draw() override {
+        setlinecolor(color);
+        setlinestyle(PS_SOLID, lineWidth);
+        ::rectangle(x1, y1, x2, y2);
+    }
+
+    void drawPreview() override {
+        setlinecolor(color);
+        setlinestyle(PS_DASH, lineWidth);
+        ::rectangle(x1, y1, x2, y2);
+    }
+
+    string getType() const override {
+        return "rectangle";
+    }
+};
+
+class Circle : public GraphicObject {
+public:
+    Circle(int x1, int y1, int x2, int y2,
+        COLORREF color, int lineWidth)
+        : GraphicObject(x1, y1, x2, y2, color, lineWidth) {
+    }
+
+    void draw() override {
+        int radius = static_cast<int>(sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2)));
+
+        const int MAX_RADIUS = 1000;
+        if (radius > MAX_RADIUS) radius = MAX_RADIUS;
+        if (radius < 0) radius = 0;
+
+        setlinecolor(color);
+        setlinestyle(PS_SOLID, lineWidth);
+        circle(x1, y1, radius);
+    }
+
+    void drawPreview() override {
+        int radius = static_cast<int>(sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2)));
+
+        const int MAX_RADIUS = 1000;
+        if (radius > MAX_RADIUS) radius = MAX_RADIUS;
+        if (radius < 0) radius = 0;
+
+        setlinecolor(color);
+        setlinestyle(PS_DASH, lineWidth);
+        circle(x1, y1, radius);
+    }
+
+    string getType() const override {
+        return "circle";
+    }
+};
+
+class CommandManager {
+private:
+    vector<unique_ptr<GraphicObject>> undoStack;
+    vector<unique_ptr<GraphicObject>> redoStack;
+    static const int maxHistory = 20;
+
+public:
+    void execute(unique_ptr<GraphicObject> graphic) {
+        undoStack.push_back(move(graphic));
+        redoStack.clear();
+
+        if (undoStack.size() > static_cast<size_t>(maxHistory)) {
+            undoStack.erase(undoStack.begin());
+        }
+    }
+
+    bool undo(vector<unique_ptr<GraphicObject>>& graphics) {
+        if (undoStack.empty() || graphics.empty()) return false;
+
+        redoStack.push_back(move(graphics.back()));
+        graphics.pop_back();
+        return true;
+    }
+
+    bool redo(vector<unique_ptr<GraphicObject>>& graphics) {
+        if (redoStack.empty()) return false;
+
+        graphics.push_back(move(redoStack.back()));
+        redoStack.pop_back();
+        return true;
+    }
+
+    bool canUndo() const { return !undoStack.empty(); }
+    bool canRedo() const { return !redoStack.empty(); }
+};
+
+class DrawingManager {
+private:
+    vector<unique_ptr<GraphicObject>> graphics;
+    vector<COLORREF> colorPalette;
+    int currentColorIndex;
+    int currentLineWidth;
+    string currentTool;
+    bool isDrawing;
+    int startX, startY;
+    unique_ptr<GraphicObject> tempGraphic;
+    CommandManager commandManager;
+
+    static const int MAX_LINE_WIDTH = 10;
+    static const int MIN_LINE_WIDTH = 1;
+    static const int DEFAULT_LINE_WIDTH = 3;
+
+public:
+    DrawingManager() :
+        currentColorIndex(0),
+        currentLineWidth(DEFAULT_LINE_WIDTH),
+        currentTool("line"),
+        isDrawing(false),
+        startX(0),
+        startY(0)
+    {
+        colorPalette = {
+            RED,
+            GREEN,
+            BLUE,
+            YELLOW,
+            MAGENTA,
+            CYAN,
+            BLACK,
+            WHITE
+        };
+    }
+
+    COLORREF getCurrentColor() const {
+        return colorPalette[currentColorIndex];
+    }
+
+    void nextColor() {
+        currentColorIndex = (currentColorIndex + 1) % static_cast<int>(colorPalette.size());
+    }
+
+    void setColor(int index) {
+        if (index >= 0 && index < static_cast<int>(colorPalette.size())) {
+            currentColorIndex = index;
+        }
+    }
+
+    int getCurrentLineWidth() const {
+        return currentLineWidth;
+    }
+
+    void increaseLineWidth() {
+        if (currentLineWidth < MAX_LINE_WIDTH) currentLineWidth++;
+    }
+
+    void decreaseLineWidth() {
+        if (currentLineWidth > MIN_LINE_WIDTH) currentLineWidth--;
+    }
+
+    string getCurrentTool() const {
+        return currentTool;
+    }
+
+    void setTool(const string& tool) {
+        currentTool = tool;
+    }
+
+    void startDrawing(int x, int y) {
+        if (isDrawing) return;
+
+        isDrawing = true;
+        startX = x;
+        startY = y;
+
+        COLORREF color = getCurrentColor();
+        int lineWidth = getCurrentLineWidth();
+
+        if (currentTool == "line") {
+            tempGraphic = make_unique<Line>(x, y, x, y, color, lineWidth);
+        }
+        else if (currentTool == "rectangle") {
+            tempGraphic = make_unique<RectObj>(x, y, x, y, color, lineWidth);
+        }
+        else if (currentTool == "circle") {
+            tempGraphic = make_unique<Circle>(x, y, x, y, color, lineWidth);
+        }
+    }
+
+    void updateDrawing(int x, int y) {
+        if (!isDrawing || !tempGraphic) return;
+        tempGraphic->updateEnd(x, y);
+    }
+
+    void finishDrawing(int x, int y) {
+        if (!isDrawing || !tempGraphic) return;
+
+        updateDrawing(x, y);
+
+        graphics.push_back(move(tempGraphic));
+        isDrawing = false;
+    }
+
+    void undo() {
+        if (commandManager.undo(graphics)) {
+            cleardevice();
+            redrawAll();
+        }
+    }
+
+    void redo() {
+        if (commandManager.redo(graphics)) {
+            cleardevice();
+            redrawAll();
+        }
+    }
+
+    void clearAll() {
+        graphics.clear();
+        cleardevice();
+    }
+
+    void redrawAll() {
+        for (const auto& graphic : graphics) {
+            graphic->draw();
+        }
+
+        if (isDrawing && tempGraphic) {
+            tempGraphic->drawPreview();
+        }
+    }
+
+    bool getIsDrawing() const {
+        return isDrawing;
+    }
+};
+
+class UIManager {
+private:
+    DrawingManager& drawingManager;
+
+    static const int TOOLBAR_HEIGHT = 40;
+    static const int STATUS_BAR_HEIGHT = 40;
+    static const int WINDOW_WIDTH = 800;
+    static const int WINDOW_HEIGHT = 600;
+    static const int CANVAS_TOP = TOOLBAR_HEIGHT;
+    static const int CANVAS_BOTTOM = WINDOW_HEIGHT - STATUS_BAR_HEIGHT;
+
+public:
+    UIManager(DrawingManager& dm) : drawingManager(dm) {}
+
+    void drawUI() {
+        setfillcolor(RGB(240, 240, 240));
+        solidrectangle(0, 0, WINDOW_WIDTH, TOOLBAR_HEIGHT);
+
+        settextcolor(BLACK);
+        settextstyle(14, 0, _T("宋体"));
+
+        string tool = drawingManager.getCurrentTool();
+        const TCHAR* toolName = _T("直线");
+        if (tool == "line") toolName = _T("直线");
+        else if (tool == "rectangle") toolName = _T("矩形");
+        else if (tool == "circle") toolName = _T("圆形");
+
+        outtextxy(10, 12, _T("工具: "));
+        outtextxy(60, 12, toolName);
+
+        outtextxy(150, 12, _T("颜色: "));
+        setfillcolor(drawingManager.getCurrentColor());
+        solidrectangle(200, 12, 220, 32);
+
+        TCHAR widthText[20];
+        _stprintf_s(widthText, _T("线宽: %d"), drawingManager.getCurrentLineWidth());
+        outtextxy(250, 12, widthText);
+
+        outtextxy(400, 12, _T("1直线 2矩形 3圆形  空格切换颜色  +/-调整线宽"));
+
+        setfillcolor(RGB(220, 220, 220));
+        solidrectangle(0, CANVAS_BOTTOM, WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        settextcolor(BLACK);
+        settextstyle(12, 0, _T("宋体"));
+        outtextxy(10, CANVAS_BOTTOM + 10, _T("Ctrl+Z撤销 Ctrl+Y重做 C清空 ESC退出"));
+
+        setlinecolor(RGB(200, 200, 200));
+        rectangle(0, CANVAS_TOP, WINDOW_WIDTH, CANVAS_BOTTOM);
+    }
+};
+
+class EventHandler {
+private:
+    DrawingManager& drawingManager;
+    UIManager& uiManager;
+
+public:
+    EventHandler(DrawingManager& dm, UIManager& ui)
+        : drawingManager(dm), uiManager(ui) {
+    }
+
+    void handleMouseEvent(ExMessage& msg) {
+        static bool isDrawing = false;
+
+        if (msg.message == WM_LBUTTONDOWN) {
+            drawingManager.startDrawing(msg.x, msg.y);
+            isDrawing = true;
+
+            cleardevice();
+            drawingManager.redrawAll();
+            uiManager.drawUI();
+        }
+        else if (msg.message == WM_MOUSEMOVE && isDrawing) {
+            drawingManager.updateDrawing(msg.x, msg.y);
+
+            cleardevice();
+            drawingManager.redrawAll();
+            uiManager.drawUI();
+        }
+        else if (msg.message == WM_LBUTTONUP && isDrawing) {
+            drawingManager.finishDrawing(msg.x, msg.y);
+            isDrawing = false;
+
+            cleardevice();
+            drawingManager.redrawAll();
+            uiManager.drawUI();
+        }
+    }
+
+    void handleKeyboardEvent(int key, bool ctrlPressed) {
+        switch (key) {
+        case '1':
+            drawingManager.setTool("line");
+            break;
+        case '2':
+            drawingManager.setTool("rectangle");
+            break;
+        case '3':
+            drawingManager.setTool("circle");
+            break;
+        case ' ':
+            drawingManager.nextColor();
+            break;
+        case VK_ADD:
+        case '=':
+            drawingManager.increaseLineWidth();
+            break;
+        case VK_SUBTRACT:
+        case '-':
+            drawingManager.decreaseLineWidth();
+            break;
+        case 'C':
+        case 'c':
+            drawingManager.clearAll();
+            break;
+        case 'Z':
+        case 'z':
+            if (ctrlPressed) drawingManager.undo();
+            break;
+        case 'Y':
+        case 'y':
+            if (ctrlPressed) drawingManager.redo();
+            break;
+        }
+    }
+};
+
+int main() {
+    // 1. 初始化图形窗口
+    initgraph(800, 600, EX_SHOWCONSOLE);  // 添加 EX_SHOWCONSOLE 显示控制台
+    setbkcolor(WHITE);
+    cleardevice();
+
+    // 2. 创建管理器对象
+    DrawingManager drawingManager;
+    UIManager uiManager(drawingManager);
+    EventHandler eventHandler(drawingManager, uiManager);
+
+    // 3. 绘制初始界面
+    uiManager.drawUI();
+
+    // 4. 显示欢迎信息
+    settextcolor(BLUE);
+    settextstyle(16, 0, _T("宋体"));
+    outtextxy(300, 250, _T("绘图程序 v1.0"));
+    outtextxy(280, 280, _T("按任意键开始绘图..."));
+
+    // 5. 等待按键（使用消息循环而不是 _getch）
+    bool showWelcome = true;
+    ExMessage msg;
+
+    while (showWelcome) {
+        if (peekmessage(&msg, EX_KEY)) {
+            showWelcome = false;
+        }
+        Sleep(10);
+    }
+
+    // 6. 清屏并绘制主界面
+    cleardevice();
+    uiManager.drawUI();
+
+    // 7. 主事件循环
+    while (true) {
+        if (peekmessage(&msg, EX_MOUSE | EX_KEY)) {
+            // 处理键盘事件
+            if (msg.message == WM_KEYDOWN) {
+                bool ctrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+
+                // ESC键退出程序
+                if (msg.vkcode == VK_ESCAPE) break;
+
+                eventHandler.handleKeyboardEvent(msg.vkcode, ctrlPressed);
+
+                // 更新界面
+                cleardevice();
+                drawingManager.redrawAll();
+                uiManager.drawUI();
+            }
+            // 处理鼠标事件
+            else if (msg.message == WM_LBUTTONDOWN ||
+                msg.message == WM_MOUSEMOVE ||
+                msg.message == WM_LBUTTONUP) {
+                eventHandler.handleMouseEvent(msg);
+            }
+        }
+        Sleep(10);
+    }
+
+    // 8. 关闭图形窗口
+    closegraph();
+    return 0;
+}
